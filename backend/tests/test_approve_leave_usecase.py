@@ -85,3 +85,19 @@ def test_execute_already_processed():
     assert result["success"] is False
     assert result["message"] == "Đơn đã được xử lý."
     mock_repo.update_leave_status.assert_not_called()
+
+def test_execute_employee_not_found():
+    mock_repo = MagicMock()
+    mock_domain_service = MagicMock()
+
+    mock_leave_request = MagicMock()
+    mock_leave_request.status = LeaveStatus.PENDING
+    mock_repo.get_leave_request.return_value = mock_leave_request
+    mock_repo.get_employee.return_value = None  # Employee không tồn tại
+
+    usecase = ApproveLeaveUseCase(repo=mock_repo, domain_service=mock_domain_service)
+
+    result = usecase.execute(1)
+    assert result["success"] is False
+    assert result["message"] == "Không tìm thấy nhân viên."
+    mock_repo.update_leave_status.assert_not_called()

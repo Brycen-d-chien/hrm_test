@@ -1,18 +1,22 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from backend.infrastructure.s3_config import get_s3_client, get_s3_bucket
+from backend.application.download_usecase import GenerateDownloadUrlUseCase
+from backend.application.manage_objects_usecase import (
+    DeleteObjectUseCase,
+    ListFolderObjectsUseCase,
+)
+from backend.application.upload_usecase import UploadEmployeeDocumentUseCase
+from backend.domain.s3_service import MAX_FILE_SIZE_BYTES, S3DomainService
+from backend.infrastructure.auth import get_current_user, require_admin
+from backend.infrastructure.s3_config import get_s3_bucket, get_s3_client
 from backend.infrastructure.s3_repository import S3Repository
 from backend.infrastructure.s3_utils import detect_content_type
-from backend.domain.s3_service import S3DomainService
-from backend.application.upload_usecase import UploadEmployeeDocumentUseCase
-from backend.application.download_usecase import GenerateDownloadUrlUseCase
-from backend.application.manage_objects_usecase import DeleteObjectUseCase, ListFolderObjectsUseCase
-from backend.infrastructure.auth import require_admin, get_current_user
 
 router = APIRouter(prefix="/api/storage", tags=["Storage"])
 
+_READ_CHUNK_SIZE = 1024 * 1024
 
-# SOLID DI Dependencies Setup
+
 def get_s3_repository():
     return S3Repository(client=get_s3_client(), bucket=get_s3_bucket())
 
@@ -49,7 +53,54 @@ def get_list_folder_usecase(
     return ListFolderObjectsUseCase(repo, domain_service)
 
 
-# Cấp 1: Router nhận request
+async def _read_upload_bytes(file: UploadFile, max_bytes: int) -> bytes:
+    data = bytearray()
+    while True:
+        chunk = await file.read(_READ_CHUNK_SIZE)
+        if not chunk:
+            break
+
+        remaining = max_bytes - len(data)
+        if remaining <= 0:
+            break
+
+        data.extend(chunk[:remaining])
+        if len(data) >= max_bytes:
+            break
+
+    return bytes(data)
+
+
+def _raise_for_failure(result: dict, default_status_code: int) -> None:
+    if result["success"]:
+        return
+
+    raise HTTPException(
+        status_code=result.get("status_code", default_status_code),
+        detail=result["message"],
+    )
+
+
+def _ensure_employee_can_access_key(
+    current_user: dict, key: str, domain_service: S3DomainService
+) -> None:
+    if current_user["role"] == "Admin":
+        return
+
+    if not domain_service.is_object_owned_by_employee(current_user["id"], key):
+        raise HTTPException(status_code=403, detail="Ban khong co quyen truy cap object nay.")
+
+
+def _ensure_employee_can_access_employee(
+    current_user: dict, employee_id: int
+) -> None:
+    if current_user["role"] == "Admin":
+        return
+
+    if current_user["id"] != employee_id:
+        raise HTTPException(status_code=403, detail="Ban khong co quyen xem objects cua employee nay.")
+
+
 @router.post("/upload")
 async def upload_file(
     employee_id: int = Form(...),
@@ -58,7 +109,7 @@ async def upload_file(
     usecase: UploadEmployeeDocumentUseCase = Depends(get_upload_usecase),
     admin_user: dict = Depends(require_admin),
 ):
-    data = await file.read()
+    data = await _read_upload_bytes(file, MAX_FILE_SIZE_BYTES + 1)
     content_type = file.content_type or detect_content_type(file.filename or "")
     result = usecase.execute(
         employee_id=employee_id,
@@ -67,8 +118,7 @@ async def upload_file(
         data=data,
         content_type=content_type,
     )
-    if not result["success"]:
-        raise HTTPException(status_code=400, detail=result["message"])
+    _raise_for_failure(result, 400)
     return result
 
 
@@ -77,11 +127,13 @@ def get_download_url(
     key: str,
     expires_in: int = 3600,
     usecase: GenerateDownloadUrlUseCase = Depends(get_download_url_usecase),
+    domain_service: S3DomainService = Depends(get_s3_domain_service),
     current_user: dict = Depends(get_current_user),
 ):
+    _ensure_employee_can_access_key(current_user, key, domain_service)
+
     result = usecase.execute(key=key, expires_in=expires_in)
-    if not result["success"]:
-        raise HTTPException(status_code=404, detail=result["message"])
+    _raise_for_failure(result, 404)
     return result
 
 
@@ -92,9 +144,10 @@ def list_objects(
     usecase: ListFolderObjectsUseCase = Depends(get_list_folder_usecase),
     current_user: dict = Depends(get_current_user),
 ):
+    _ensure_employee_can_access_employee(current_user, employee_id)
+
     result = usecase.execute(employee_id=employee_id, folder=folder)
-    if not result["success"]:
-        raise HTTPException(status_code=400, detail=result["message"])
+    _raise_for_failure(result, 400)
     return result
 
 
@@ -105,6 +158,5 @@ def delete_object(
     admin_user: dict = Depends(require_admin),
 ):
     result = usecase.execute(key=key)
-    if not result["success"]:
-        raise HTTPException(status_code=404, detail=result["message"])
+    _raise_for_failure(result, 404)
     return result

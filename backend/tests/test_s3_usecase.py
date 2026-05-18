@@ -1,11 +1,10 @@
-import pytest
-from unittest.mock import MagicMock
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
-from backend.application.upload_usecase import UploadEmployeeDocumentUseCase
 from backend.application.download_usecase import GenerateDownloadUrlUseCase
 from backend.application.manage_objects_usecase import DeleteObjectUseCase, ListFolderObjectsUseCase
-from backend.domain.storage_entity import S3ValidationError, S3StorageError
+from backend.application.upload_usecase import UploadEmployeeDocumentUseCase
+from backend.domain.storage_entity import S3StorageError, S3ValidationError
 
 
 def make_mocks():
@@ -31,13 +30,14 @@ class TestUploadEmployeeDocumentUseCase:
 
     def test_execute_returns_failure_on_validation_error(self):
         mock_repo, mock_ds = make_mocks()
-        mock_ds.validate_upload.side_effect = S3ValidationError("File quá lớn.")
+        mock_ds.validate_upload.side_effect = S3ValidationError("File qua lon.")
 
         usecase = UploadEmployeeDocumentUseCase(mock_repo, mock_ds)
         result = usecase.execute(1, "avatars", "photo.jpg", b"data", "image/jpeg")
 
         assert result["success"] is False
-        assert "quá lớn" in result["message"]
+        assert result["status_code"] == 400
+        assert "qua lon" in result["message"]
         mock_repo.put_object_bytes.assert_not_called()
 
     def test_execute_returns_failure_on_storage_error(self):
@@ -50,7 +50,8 @@ class TestUploadEmployeeDocumentUseCase:
         result = usecase.execute(1, "avatars", "photo.jpg", b"data", "image/jpeg")
 
         assert result["success"] is False
-        assert "Lỗi lưu trữ" in result["message"]
+        assert result["status_code"] == 502
+        assert "Loi luu tru" in result["message"]
 
 
 class TestGenerateDownloadUrlUseCase:
@@ -73,7 +74,8 @@ class TestGenerateDownloadUrlUseCase:
         result = usecase.execute("avatars/employee_1/photo.jpg")
 
         assert result["success"] is False
-        assert "không tồn tại" in result["message"]
+        assert result["status_code"] == 404
+        assert "khong ton tai" in result["message"]
         mock_repo.generate_presigned_url.assert_not_called()
 
     def test_execute_returns_failure_on_storage_error(self):
@@ -85,7 +87,19 @@ class TestGenerateDownloadUrlUseCase:
         result = usecase.execute("some/key")
 
         assert result["success"] is False
-        assert "Không thể tạo URL" in result["message"]
+        assert result["status_code"] == 502
+        assert "Khong the tao URL" in result["message"]
+
+    def test_execute_returns_failure_when_object_exists_check_errors(self):
+        mock_repo, mock_ds = make_mocks()
+        mock_repo.object_exists.side_effect = S3StorageError("Access denied")
+
+        usecase = GenerateDownloadUrlUseCase(mock_repo, mock_ds)
+        result = usecase.execute("some/key")
+
+        assert result["success"] is False
+        assert result["status_code"] == 502
+        assert "Khong the tao URL" in result["message"]
 
 
 class TestDeleteObjectUseCase:
@@ -107,6 +121,7 @@ class TestDeleteObjectUseCase:
         result = usecase.execute("missing/key")
 
         assert result["success"] is False
+        assert result["status_code"] == 404
         mock_repo.delete_object.assert_not_called()
 
     def test_execute_returns_failure_on_storage_error(self):
@@ -118,7 +133,19 @@ class TestDeleteObjectUseCase:
         result = usecase.execute("some/key")
 
         assert result["success"] is False
-        assert "Lỗi xóa" in result["message"]
+        assert result["status_code"] == 502
+        assert "Loi xoa" in result["message"]
+
+    def test_execute_returns_failure_when_object_exists_check_errors(self):
+        mock_repo, mock_ds = make_mocks()
+        mock_repo.object_exists.side_effect = S3StorageError("Access denied")
+
+        usecase = DeleteObjectUseCase(mock_repo, mock_ds)
+        result = usecase.execute("some/key")
+
+        assert result["success"] is False
+        assert result["status_code"] == 502
+        assert "Loi xoa" in result["message"]
 
 
 class TestListFolderObjectsUseCase:
@@ -126,7 +153,11 @@ class TestListFolderObjectsUseCase:
         mock_repo, mock_ds = make_mocks()
         mock_ds.build_folder_prefix.return_value = "documents/employee_1/"
         mock_repo.list_objects.return_value = [
-            {"Key": "documents/employee_1/file.pdf", "Size": 1024, "LastModified": datetime(2026, 1, 1, tzinfo=timezone.utc)},
+            {
+                "Key": "documents/employee_1/file.pdf",
+                "Size": 1024,
+                "LastModified": datetime(2026, 1, 1, tzinfo=timezone.utc),
+            },
         ]
 
         usecase = ListFolderObjectsUseCase(mock_repo, mock_ds)
@@ -148,6 +179,17 @@ class TestListFolderObjectsUseCase:
         assert result["count"] == 0
         assert result["objects"] == []
 
+    def test_execute_returns_failure_on_validation_error(self):
+        mock_repo, mock_ds = make_mocks()
+        mock_ds.build_folder_prefix.side_effect = S3ValidationError("Folder khong duoc phep.")
+
+        usecase = ListFolderObjectsUseCase(mock_repo, mock_ds)
+        result = usecase.execute(1, "invoices")
+
+        assert result["success"] is False
+        assert result["status_code"] == 400
+        assert "Folder" in result["message"]
+
     def test_execute_returns_failure_on_storage_error(self):
         mock_repo, mock_ds = make_mocks()
         mock_ds.build_folder_prefix.return_value = "documents/employee_1/"
@@ -157,4 +199,5 @@ class TestListFolderObjectsUseCase:
         result = usecase.execute(1, "documents")
 
         assert result["success"] is False
-        assert "Lỗi liệt kê" in result["message"]
+        assert result["status_code"] == 502
+        assert "Loi liet ke" in result["message"]

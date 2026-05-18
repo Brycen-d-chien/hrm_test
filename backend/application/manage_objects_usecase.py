@@ -1,41 +1,56 @@
-from backend.infrastructure.s3_repository import S3Repository
 from backend.domain.s3_service import S3DomainService
-from backend.domain.storage_entity import S3StorageError
+from backend.domain.storage_entity import S3StorageError, S3ValidationError
+from backend.infrastructure.s3_repository import S3Repository
 
 
 class DeleteObjectUseCase:
-    # Cấp 2: Kiểm tra tồn tại rồi xóa object
+    # Level 2: check existence and delete object.
 
     def __init__(self, repo: S3Repository, domain_service: S3DomainService):
         self.repo = repo
         self.domain_service = domain_service
 
     def execute(self, key: str) -> dict:
-        if not self.repo.object_exists(key):
-            return {"success": False, "message": "Object không tồn tại."}
-
         try:
-            self.repo.delete_object(key)
-        except S3StorageError as e:
-            return {"success": False, "message": f"Lỗi xóa: {e}"}
+            if not self.repo.object_exists(key):
+                return {
+                    "success": False,
+                    "message": "Object khong ton tai.",
+                    "status_code": 404,
+                }
 
-        return {"success": True, "message": f"Đã xóa '{key}'."}
+            self.repo.delete_object(key)
+        except S3StorageError as error:
+            return {
+                "success": False,
+                "message": f"Loi xoa: {error}",
+                "status_code": 502,
+            }
+
+        return {"success": True, "message": f"Da xoa '{key}'."}
 
 
 class ListFolderObjectsUseCase:
-    # Cấp 2: List toàn bộ object trong folder của một employee
+    # Level 2: list all objects in an employee folder.
 
     def __init__(self, repo: S3Repository, domain_service: S3DomainService):
         self.repo = repo
         self.domain_service = domain_service
 
     def execute(self, employee_id: int, folder: str) -> dict:
-        prefix = self.domain_service.build_folder_prefix(employee_id, folder)
+        try:
+            prefix = self.domain_service.build_folder_prefix(employee_id, folder)
+        except S3ValidationError as error:
+            return {"success": False, "message": str(error), "status_code": 400}
 
         try:
             raw_objects = self.repo.list_objects(prefix)
-        except S3StorageError as e:
-            return {"success": False, "message": f"Lỗi liệt kê objects: {e}"}
+        except S3StorageError as error:
+            return {
+                "success": False,
+                "message": f"Loi liet ke objects: {error}",
+                "status_code": 502,
+            }
 
         objects = [
             {

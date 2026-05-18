@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from backend.api.leave_router import router as leave_router
 from backend.api.employee_router import router as employee_router
+from backend.api.storage_router import router as storage_router
 from backend.domain.leave_entity import Base
 from backend.infrastructure.database import engine
 
@@ -12,6 +13,7 @@ Base.metadata.create_all(bind=engine)
 # Đăng ký Router
 app.include_router(leave_router)
 app.include_router(employee_router)
+app.include_router(storage_router)
 
 @app.get("/")
 def root():
